@@ -1,11 +1,16 @@
-// Pokemon GO Command Center v0.4 - Home Assistant custom Lovelace card
+// Pokemon GO Command Center v0.8 - Home Assistant custom Lovelace card
 // Source: community-maintained ScrapedDuck events feed (not an official API).
-class PokemonGoCardV4 extends HTMLElement {
+class PokemonGoCardV8 extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
     this.events = [];
     this.raids = [];
+    this.maxBattles = [];
+    this.maxError = "";
+    this.maxFetch = null;
+    this.maxCpStats = [];
+    this.maxCpError = "";
     this.raidError = "";
     this.raidFetch = null;
     this.error = '';
@@ -19,8 +24,8 @@ class PokemonGoCardV4 extends HTMLElement {
 
   setConfig(config) {
     this.config = { view: 'today', ...config };
-    if (!['today', 'active', 'upcoming', 'raids'].includes(this.config.view)) {
-      throw new Error('view must be today, active, upcoming or raids');
+    if (!['today', 'active', 'upcoming', 'raids', 'max_battles'].includes(this.config.view)) {
+      throw new Error('view must be today, active, upcoming, raids or max_battles');
     }
     this.render();
     this.load();
@@ -35,6 +40,7 @@ class PokemonGoCardV4 extends HTMLElement {
 
   async load() {
     if (this.config?.view === "raids") return this.loadRaids();
+    if (this.config?.view === "max_battles") return this.loadMaxBattles();
     if (this.fetching) return;
     this.fetching = true;
     try {
@@ -89,6 +95,128 @@ class PokemonGoCardV4 extends HTMLElement {
       this.loading = false;
       this.render();
     }
+  }
+
+  // Featured Max Battle events from the community ScrapedDuck event calendar.
+  // This feed is NOT a complete live list of Power Spot bosses.
+  async loadMaxBattles() {
+    if (this.fetching) return;
+    this.fetching = true;
+    try {
+      const response = await fetch('https://raw.githubusercontent.com/bigfoott/ScrapedDuck/data/events.json', {cache:'no-cache'});
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      if (!Array.isArray(data)) throw new Error('Unexpected events JSON structure');
+      const matches = data.filter(item => {
+        const type = String(item.eventType || '').toLowerCase();
+        const id = String(item.eventID || '').toLowerCase();
+        const title = String(item.name || '').toLowerCase();
+        return /max-mondays|max-battles|gigantamax|dynamax/.test(type) ||
+               /max-mondays|max-battles|gigantamax|dynamax/.test(id) ||
+               /max monday|max battles|gigantamax|dynamax/.test(title);
+      });
+      // Independent GO base stats; CP is calculated, not supplied by the event feed.
+      this.maxCpError = '';
+      try {
+        const statsResponse = await fetch('https://pogoapi.net/api/v1/pokemon_stats.json', {cache:'no-cache'});
+        if (!statsResponse.ok) throw new Error(`HTTP ${statsResponse.status}`);
+        const statsData = await statsResponse.json();
+        if (!Array.isArray(statsData)) throw new Error('Unexpected base stats format');
+        this.maxCpStats = statsData;
+      } catch (statsError) {
+        this.maxCpError = String(statsError.message || statsError);
+      }
+      this.maxBattles = matches.map(item => {
+        const title = String(item.name || 'Max Battle event');
+        const start = this.parseDate(item.start), end = this.parseDate(item.end);
+        const boss = title.match(/(?:Dynamax|Gigantamax)\s+(.+?)(?:\s+during\s+Max Monday|\s+in\s+Max Battles|\s+Max Battles|$)/i);
+        const img = item.image || '';
+        const eventType = String(item.eventType || 'max-battles');
+        return {
+          name: boss ? boss[1].trim() : title,
+          title, start, end, eventType,
+          form: /gigantamax/i.test(title) ? 'Gigantamax' : /dynamax/i.test(title) ? 'Dynamax' : 'Max Battles',
+          image: typeof img === 'string' && /^https:\/\//i.test(img) ? img : '',
+          link: typeof item.link === 'string' && /^https:\/\//i.test(item.link) ? item.link : ''
+        };
+      }).filter(e => e.start && e.end).sort((a,b) => a.start - b.start);
+      this.maxError = '';
+      this.maxFetch = new Date();
+    } catch (error) {
+      this.maxError = String(error.message || error);
+    } finally {
+      this.fetching = false;
+      this.loading = false;
+      this.render();
+    }
+  }
+
+  // GO catch CP ranges (10/10/10 to 15/15/15), level 20 and weather-boosted level 25.
+  // No guesses for unnamed events, regional forms or ambiguous species matches.
+  maxCpForEvent(event) {
+    const raw = String(event.name || '').trim();
+    if (!raw || /announced|trails|event|unknown|battle|monday/i.test(raw)) return null;
+    const normalized = x => String(x || '').toLowerCase().normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
+    const name = normalized(raw);
+    const found = this.maxCpStats.filter(p => normalized(p.pokemon_name) === name);
+    if (!found.length) return null;
+    // Do not silently select a regional / alternate form.
+    const base = found.filter(p => /^(normal|default)$/i.test(String(p.form || 'Normal')));
+    if (base.length !== 1) return null;
+    const p = base[0];
+    const atk = Number(p.base_attack), def = Number(p.base_defense), sta = Number(p.base_stamina);
+    if (![atk, def, sta].every(Number.isFinite)) return null;
+    const cp = (level, iv) => {
+      const multiplier = level === 20 ? 0.59740001 : 0.667934;
+      return Math.max(10, Math.floor((atk + iv) * Math.sqrt(def + iv) *
+        Math.sqrt(sta + iv) * multiplier * multiplier / 10));
+    };
+    return {normal: `${cp(20,10)}–${cp(20,15)}`,
+            boosted: `${cp(25,10)}–${cp(25,15)}`};
+  }
+
+  renderMaxBattles() {
+    const esc = v => this.escape(v);
+    const now = new Date();
+    const active = this.maxBattles.filter(e => e.start <= now && e.end > now);
+    const upcoming = this.maxBattles.filter(e => e.start > now);
+    const eventCard = e => {
+      const cp = this.maxCpForEvent(e);
+      return `
+      <article class="raid">
+        ${e.image ? `<img class="raid-img" src="${esc(e.image)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : '<div class="raid-img placeholder">⚡</div>'}
+        <div class="raid-body">
+          <div class="raid-name">${esc(e.name)}</div>
+          <div class="muted">${esc(e.form)} · ${esc(e.eventType.replaceAll('-', ' '))}</div>
+          <div class="cp-line"><span>Max CP</span><strong>${cp ? esc(cp.normal.split('–')[1]) : '—'}</strong></div>
+          <div class="cp-line"><span>Max Boosted CP</span><strong>${cp ? esc(cp.boosted.split('–')[1]) : '—'}</strong></div>
+          <div class="cp-line"><span>Starts</span><strong>${esc(this.dateLabel(e.start))}</strong></div>
+          <div class="cp-line"><span>Ends</span><strong>${esc(this.dateLabel(e.end))}</strong></div>
+          ${e.link ? `<a href="${esc(e.link)}" target="_blank" rel="noopener noreferrer">Event details ↗</a>` : ''}
+        </div>
+      </article>`;
+    };
+    const section = (title, list) => list.length ? `<section class="group"><div class="group-head"><h3>${title} <span class="count">${list.length}</span></h3></div><div class="raid-grid">${list.map(eventCard).join('')}</div></section>` : '';
+    const content = section('Happening now', active) + section('Upcoming', upcoming.slice(0, 24));
+    this.shadowRoot.innerHTML = `<style>
+      :host{display:block;min-width:0}ha-card{padding:18px;font-family:var(--primary-font-family,Arial,sans-serif)}
+      .top{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}h2{font-size:22px;margin:0 0 4px}
+      .muted{font-size:12px;color:var(--secondary-text-color,#777)}button{border:1px solid var(--divider-color,#ddd);background:var(--secondary-background-color,#eee);color:var(--primary-text-color,#222);padding:8px 12px;border-radius:9px;cursor:pointer}
+      .group{margin-top:22px}.group-head{border-bottom:1px solid var(--divider-color,#ddd);margin-bottom:10px;padding-bottom:8px}h3{margin:0;font-size:17px}.count{font-size:12px;font-weight:normal;color:var(--secondary-text-color,#777)}
+      .raid-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.raid{display:flex;gap:12px;min-width:0;border:1px solid var(--divider-color,#ddd);border-radius:12px;padding:12px}
+      .raid-img{width:84px;height:84px;object-fit:contain;flex-shrink:0;background:var(--secondary-background-color,#eee);border-radius:10px}.placeholder{display:grid;place-items:center}
+      .raid-body{flex:1;min-width:0}.raid-name{font-size:15px;font-weight:700;overflow-wrap:anywhere}
+      .cp-line{display:flex;justify-content:space-between;gap:8px;border-top:1px solid var(--divider-color,#ddd);padding:5px 0;font-size:12px}.cp-line span{color:var(--secondary-text-color,#777)}.cp-line strong{white-space:nowrap}
+      .raid-body a{display:inline-block;margin-top:9px;font-size:12px;color:var(--primary-color,#03a9f4)}
+      .notice{background:var(--secondary-background-color,#eee);padding:14px;border-radius:9px;margin-top:16px;font-size:13px}.foot{margin-top:20px;border-top:1px solid var(--divider-color,#ddd);padding-top:10px}
+      @media(max-width:750px){.raid-grid{grid-template-columns:1fr}ha-card{padding:14px}.raid-img{width:72px;height:72px}}
+    </style><ha-card><div class="top"><div><h2>Pokémon GO · Max Battles</h2><div class="muted">Featured Max Battle events · ScrapedDuck / Leek Duck</div></div><button id="refresh">↻ Refresh</button></div>
+      ${this.maxCpError ? `<div class="notice">CP data unavailable: ${esc(this.maxCpError)} · CP values hidden until stats can be verified.</div>` : ''}
+      ${this.maxError ? `<div class="notice">Feed error: ${esc(this.maxError)}${this.maxBattles.length ? ' · showing previous results' : ''}</div>` : ''}
+      ${this.loading ? '<div class="notice">Loading Max Battles…</div>' : content || '<div class="notice">No current or upcoming featured Max Battles listed in this feed.</div>'}
+      <div class="foot muted">Updated ${this.maxFetch ? this.dateLabel(this.maxFetch) : 'not yet'} · Featured event calendar, not a complete Power Spot boss rotation. CP calculated from community GO base stats (10–15 IV); unknown/ambiguous forms shown as —. Boss names and images depend on event metadata.</div></ha-card>`;
+    this.shadowRoot.getElementById('refresh').onclick = () => this.loadMaxBattles();
   }
 
   renderRaids() {
@@ -238,6 +366,7 @@ class PokemonGoCardV4 extends HTMLElement {
   render() {
     if (!this.config) return;
     if (this.config.view === "raids") return this.renderRaids();
+    if (this.config.view === "max_battles") return this.renderMaxBattles();
     const now = new Date(), today = this.day(now), view = this.config.view;
     const active = this.events.filter(e => this.isActive(e, now));
     const starts = this.events.filter(e => e.start && this.day(e.start) === today);
@@ -264,7 +393,7 @@ class PokemonGoCardV4 extends HTMLElement {
     } else {
       content += this.upcomingCalendar(upcoming, now, today);
     }
-    const title = {today:'Today',active:'Active',upcoming:'Upcoming',raids:'Raids'}[view];
+    const title = {today:'Today',active:'Active',upcoming:'Upcoming',raids:'Raids',max_battles:'Max Battles'}[view];
     this.shadowRoot.innerHTML = `<style>
       :host{display:block;min-width:0}ha-card{padding:20px;font-family:var(--primary-font-family,Arial,sans-serif)}
       .top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}
@@ -299,6 +428,6 @@ class PokemonGoCardV4 extends HTMLElement {
     if (toggle) toggle.onclick = () => { this.showLong = !this.showLong; this.render(); };
   }
 }
-if (!customElements.get('pokemon-go-card')) customElements.define('pokemon-go-card', PokemonGoCardV4);
+if (!customElements.get('pokemon-go-card')) customElements.define('pokemon-go-card', PokemonGoCardV8);
 window.customCards = window.customCards || [];
 if (!window.customCards.some(x => x.type === 'pokemon-go-card')) window.customCards.push({type:'pokemon-go-card',name:'Pokémon GO Command Center',description:'ScrapedDuck event dashboard'});

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#111827">
-  <meta name="description" content="Pokémon GO: Today, Upcoming and Raids. Community event data.">
+  <meta name="description" content="Pokémon GO: Today, Upcoming, Raids and Max Battles. Community event data.">
   <title>Pokémon GO · Command Center</title>
   <style>
     :root { color-scheme: dark; --primary-font-family:system-ui,-apple-system,Segoe UI,sans-serif; --primary-text-color:#f4f5f7; --secondary-text-color:#a8b1c0; --secondary-background-color:#263142; --divider-color:#344156; --primary-color:#61c6ff; }
@@ -24,23 +24,24 @@
   </style>
 </head>
 <body>
-  <header><h1>🎮 Pokémon GO · Command Center</h1><p>Today · Upcoming · Raids</p></header>
+  <header><h1>🎮 Pokémon GO · Command Center</h1><p>Today · Upcoming · Raids · Max Battles</p></header>
   <nav aria-label="Välj vy">
     <button data-view="today" aria-selected="true">Today</button>
     <button data-view="upcoming" aria-selected="false">Upcoming</button>
     <button data-view="raids" aria-selected="false">Raids</button>
+    <button data-view="max_battles" aria-selected="false">Max Battles</button>
   </nav>
   <main><pokemon-go-card id="dashboard"></pokemon-go-card></main>
   <footer>Community data from ScrapedDuck / Leek Duck. Unofficial fan project.</footer>
-  <script src="./pokemon-go-card.js"></script>
+  <script src="./pokemon-go-card.js?v=0.9"></script>
   <script>
     const card = document.getElementById('dashboard');
     const tabs = [...document.querySelectorAll('[data-view]')];
     function navigate(view) {
-      if (!['today','upcoming','raids'].includes(view)) view='today';
+      if (!['today','upcoming','raids','max_battles'].includes(view)) view='today';
       tabs.forEach(b => b.setAttribute('aria-selected', String(b.dataset.view===view)));
       // Reset data when switching views so the corresponding feed is loaded.
-      card.events=[]; card.raids=[]; card.loading=true; card.error=''; card.raidError='';
+      card.events=[]; card.raids=[]; card.maxBattles=[]; card.loading=true; card.error=''; card.raidError=''; card.maxError='';
       card.setConfig({view});
       history.replaceState(null,'','#'+view);
     }
